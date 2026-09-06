@@ -2,6 +2,10 @@ name: webhook
 
 on:
   workflow_dispatch:
+    inputs:
+      fake_update:
+        description: "1 = отправить один тестовый апдейт в воркер"
+        default: "0"
 
 permissions:
   contents: read
@@ -11,15 +15,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Set webhook and check
+      - name: Webhook diagnostics
         env:
           URL: ${{ secrets.WEBHOOK_SETUP_URL }}
+          SECRET: ${{ secrets.WORKER_SECRET }}
+          FAKE: ${{ inputs.fake_update }}
         run: |
-          echo "привязка webhook:"
-          curl -s "$URL"
-          echo
           echo "getWebhookInfo:"
           INFO_URL="https://api.telegram.org/bot${URL#*bot}"
           INFO_URL="${INFO_URL%%setWebhook*}getWebhookInfo"
-          curl -s "$INFO_URL" | head -c 400
-          echo
+          curl -s "$INFO_URL" | head -c 500; echo
+          if [ "$FAKE" = "1" ]; then
+            echo "отправляю ОДИН тестовый апдейт:"
+            curl -s -X POST "https://tg-orchestrator.sdghsdkjlas27.workers.dev" \
+              -H "Content-Type: application/json" \
+              -H "X-Telegram-Bot-Api-Secret-Token: $SECRET" \
+              -d '{"update_id":99000002,"message":{"message_id":2,"chat":{"id":8356460452},"date":0,"text":"/status"}}'
+            echo
+            echo "жду 40 секунд (крон мог помешать)…"
+            sleep 40
+          fi
+          echo "health (счётчики воркера):"
+          curl -s "https://tg-orchestrator.sdghsdkjlas27.workers.dev/health"; echo
