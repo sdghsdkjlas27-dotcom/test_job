@@ -72,33 +72,41 @@ jobs:
           t = json.load(open("task.json"))["task"]
           if os.environ.get("PROJECT_DIR"):
               t += f"\n\nПроект для анализа УЖЕ склонирован в {os.environ['PROJECT_DIR']} — работай только внутри него, файлы воркспейса вне proj не трогай."
-          t += f"\n\nРезультат пиши строго по абсолютному пути {os.environ['GITHUB_WORKSPACE']}/agent-findings.json. После записи перечитай файл и убедись, что найденные баги реально в нём."
+          t += f"\n\nРезультат пиши строго по абсолютному пути {os.environ['GITHUB_WORKSPACE']}/agent-findings.json."
+          t += "\nФормат файла: валидный JSON-ОБЪЕКТ {\"findings\": [...]} — НЕ голый массив, БЕЗ markdown-заборов ``` и пояснений в файле."
+          t += "\nПосле записи перечитай файл и убедись, что найденные баги реально в нём."
           print(t)
           PY
           )
           if [ "$HAS_DELIVER" = "true" ]; then
             opencode run --model "$MODEL" "$TASK" > agent.log 2>&1 || true
-            test -f agent-findings.json || echo '{"findings": []}' > agent-findings.json
-            python3 -c "import json; json.load(open('agent-findings.json'))" || echo '{"findings": []}' > agent-findings.json
             echo "агент отработал; вывод скрыт, результаты уходят в приватное хранилище"
           else
             opencode run --model "$MODEL" "$TASK" 2>&1 | tee agent.log || true
             echo "=== хвост лога агента ==="
             tail -15 agent.log
-            test -f agent-findings.json || echo '{"findings": []}' > agent-findings.json
-            python3 -c "import json; json.load(open('agent-findings.json'))" || echo '{"findings": []}' > agent-findings.json
-            echo "--- findings ---"
-            cat agent-findings.json
           fi
           python3 - <<'PY'
-          import json
-          try:
-              fs = json.load(open("agent-findings.json")).get("findings", [])
-              print(f"ВАЛИДАЦИЯ: findings = {len(fs)} шт.")
-              for f in fs:
-                  print("  -", f.get("severity"), "|", f.get("title"), "|", f.get("file"))
-          except Exception as e:
-              print("ВАЛИДАЦИЯ: не удалось прочитать findings:", e)
+          import json, os
+          raw = open("agent-findings.json", "rb").read() if os.path.isfile("agent-findings.json") else b""
+          d = None
+          if raw:
+              try:
+                  d = json.loads(raw.decode("utf-8", "replace").strip().removeprefix("```json").removesuffix("```").strip())
+              except Exception:
+                  d = None
+          if isinstance(d, list):
+              d = {"findings": d}
+          if not isinstance(d, dict) or not isinstance(d.get("findings"), list):
+              d = {"findings": []}
+              if raw:
+                  open("agent-findings.raw.txt", "wb").write(raw[:10000])
+          json.dump(d, open("agent-findings.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+          print(f"ВАЛИДАЦИЯ: findings = {len(d['findings'])} шт.")
+          for f in d["findings"]:
+              print("  -", f.get("severity"), "|", f.get("title"), "|", f.get("file"), ":", f.get("line"))
+          if os.path.isfile("agent-findings.raw.txt"):
+              print("СЫРОЙ вывод агента сохранён в agent-findings.raw.txt для разбора")
           PY
 
       - name: Deliver
@@ -117,7 +125,7 @@ jobs:
           stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H%M%S")
           out = os.path.join(wdir, stamp)
           os.makedirs(out, exist_ok=True)
-          for f in ["agent-findings.json", "agent.log", "task_snapshot.json"] + list(d.get("include", [])):
+          for f in ["agent-findings.json", "agent-findings.raw.txt", "agent.log", "task_snapshot.json"] + list(d.get("include", [])):
               if os.path.isfile(f):
                   shutil.copy(f, os.path.join(out, os.path.basename(f)))
           def git(*a):
