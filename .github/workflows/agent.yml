@@ -87,26 +87,75 @@ jobs:
             tail -15 agent.log
           fi
           python3 - <<'PY'
-          import json, os
-          raw = open("agent-findings.json", "rb").read() if os.path.isfile("agent-findings.json") else b""
+          import json, os, glob, re
+
+          raw = b""
+          src = "корень воркспейса"
+          if os.path.isfile("agent-findings.json"):
+              raw = open("agent-findings.json", "rb").read()
+          else:
+              # агент мог записать файл в свой корень проекта (напр. proj/)
+              cands = [p for p in glob.glob("**/agent-findings.json", recursive=True)
+                       if ".git/" not in p and "node_modules" not in p]
+              if cands:
+                  cands.sort(key=os.path.getmtime)
+                  raw = open(cands[-1], "rb").read()
+                  src = cands[-1]
+          if not raw and os.path.isfile("agent.log"):
+              # файл исчез вовсе — вытаскиваем последний JSON с "findings" из лога
+              log = open("agent.log", encoding="utf-8", errors="replace").read()
+              i = log.rfind('"findings"')
+              if i >= 0:
+                  s = log.rfind("{", 0, i)
+                  depth = 0
+                  for j in range(s, len(log)):
+                      if log[j] == "{":
+                          depth += 1
+                      elif log[j] == "}":
+                          depth -= 1
+                          if depth == 0:
+                              raw = log[s:j + 1].encode("utf-8", "replace")
+                              src = "финальное сообщение агента"
+                              break
+                  if raw:
+                      print("файла не было, JSON вытащен из agent.log")
+
           d = None
           if raw:
               try:
-                  d = json.loads(raw.decode("utf-8", "replace").strip().removeprefix("```json").removesuffix("```").strip())
-              except Exception:
-                  d = None
+                  d = json.loads(raw.decode("utf-8", "replace").strip().removeprefix("```json").removesuffix("```").strip("` \n"))
+              except Exception as e:
+                  print("сырой вывод не распарсился:", e)
+                  open("agent-findings.raw.txt", "wb").write(raw[:10000])
           if isinstance(d, list):
               d = {"findings": d}
           if not isinstance(d, dict) or not isinstance(d.get("findings"), list):
               d = {"findings": []}
-              if raw:
-                  open("agent-findings.raw.txt", "wb").write(raw[:10000])
-          json.dump(d, open("agent-findings.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-          print(f"ВАЛИДАЦИЯ: findings = {len(d['findings'])} шт.")
+
+          KEYS = ["title", "file", "line", "severity", "description", "evidence", "repro", "fix_idea"]
+          norm = []
           for f in d["findings"]:
+              if not isinstance(f, dict):
+                  continue
+              g = dict(f)
+              if "reproduction" in g and "repro" not in g:
+                  g["repro"] = g.pop("reproduction")
+              if "fix" in g and "fix_idea" not in g:
+                  g["fix_idea"] = g.pop("fix")
+              if "why" in g:
+                  g["description"] = (g.get("description", "") + " " + g.pop("why")).strip()
+              if not g.get("title"):
+                  g["title"] = (g.get("description") or "finding")[:110]
+              g.setdefault("severity", "major")
+              g.setdefault("evidence", "")
+              g["file"] = str(g.get("file", "")).replace("/home/runner/work/test_job/test_job/", "")
+              norm.append({k: g.get(k) for k in KEYS})
+          d = {"findings": norm}
+          json.dump(d, open("agent-findings.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+          print(f"ИСТОЧНИК: {src}")
+          print(f"ВАЛИДАЦИЯ: findings = {len(norm)} шт.")
+          for f in norm:
               print("  -", f.get("severity"), "|", f.get("title"), "|", f.get("file"), ":", f.get("line"))
-          if os.path.isfile("agent-findings.raw.txt"):
-              print("СЫРОЙ вывод агента сохранён в agent-findings.raw.txt для разбора")
           PY
 
       - name: Deliver
