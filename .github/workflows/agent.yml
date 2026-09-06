@@ -87,11 +87,12 @@ jobs:
           else
             opencode run --model "$MODEL" "$TASK" 2>&1 | tee agent.log || true
           fi
-          # исчерпана минутная квота - ждём и продолжаем ту же сессию
-          for i in 1 2 3; do
-            if ! grep -qiE "exceeded your current quota|RESOURCE_EXHAUSTED|rate.?limit|429" agent.log; then break; fi
-            echo "лимит запросов - пауза 70с и продолжение сессии (попытка $i)"
-            sleep 70
+          # исчерпана минутная квота - ждём и продолжаем ту же сессию.
+          # смотрим только хвост лога: старые ошибки квоты от прошлых попыток не считаем
+          for i in 1 2 3 4; do
+            if ! tail -30 agent.log | grep -qiE "exceeded your current quota|RESOURCE_EXHAUSTED|rate.?limit|429"; then break; fi
+            echo "лимит запросов - пауза 75с и продолжение сессии (попытка $i)"
+            sleep 75
             CONT="Продолжай анализ с места остановки. Если анализ уже завершён - запиши agent-findings.json по указанному абсолютному пути и перечитай его."
             if [ "$HAS_DELIVER" = "true" ]; then
               opencode run --model "$MODEL" --continue "$CONT" >> agent.log 2>&1 || true
