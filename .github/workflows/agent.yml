@@ -87,23 +87,16 @@ jobs:
             tail -15 agent.log
           fi
           python3 - <<'PY'
-          import json, os, glob, re
+          import json, os, glob
 
-          raw = b""
-          src = "корень воркспейса"
-          if os.path.isfile("agent-findings.json"):
-              raw = open("agent-findings.json", "rb").read()
-          else:
-              # агент мог записать файл в свой корень проекта (напр. proj/)
-              cands = [p for p in glob.glob("**/agent-findings.json", recursive=True)
-                       if ".git/" not in p and "node_modules" not in p]
-              if cands:
-                  cands.sort(key=os.path.getmtime)
-                  raw = open(cands[-1], "rb").read()
-                  src = cands[-1]
-          if not raw and os.path.isfile("agent.log"):
-              # файл исчез вовсе — тянем JSON из финального сообщения в логе.
-              # raw_decode с конца: скобки внутри строк (#{...}) ему не страшны
+          def parse(x):
+              return json.loads(x.decode("utf-8", "replace").strip().removeprefix("```json").removesuffix("```").strip("` \n"))
+
+          def from_log():
+              # JSON из финального сообщения в логе; raw_decode с конца:
+              # скобки внутри строк (#{...}) ему не страшны
+              if not os.path.isfile("agent.log"):
+                  return None, ""
               log = open("agent.log", encoding="utf-8", errors="replace").read()
               dec = json.JSONDecoder()
               i = len(log)
@@ -116,22 +109,41 @@ jobs:
                   except Exception:
                       continue
                   if isinstance(obj, dict) and isinstance(obj.get("findings"), list):
-                      raw = json.dumps(obj, ensure_ascii=False).encode()
-                      src = "финальное сообщение агента"
-                      print("файла не было, JSON вытащен из agent.log")
-                      break
+                      return obj, "финальное сообщение агента"
+              return None, ""
 
+          raw = b""
+          src = "корень воркспейса"
           d = None
-          if raw:
+          if os.path.isfile("agent-findings.json"):
+              raw = open("agent-findings.json", "rb").read()
               try:
-                  d = json.loads(raw.decode("utf-8", "replace").strip().removeprefix("```json").removesuffix("```").strip("` \n"))
+                  d = parse(raw)
               except Exception as e:
-                  print("сырой вывод не распарсился:", e)
-                  open("agent-findings.raw.txt", "wb").write(raw[:10000])
-          if isinstance(d, list):
-              d = {"findings": d}
+                  print("agent-findings.json не парсится:", e)
+          else:
+              # агент мог записать файл в свой корень проекта (напр. proj/)
+              cands = [p for p in glob.glob("**/agent-findings.json", recursive=True)
+                       if ".git/" not in p and "node_modules" not in p]
+              if cands:
+                  cands.sort(key=os.path.getmtime)
+                  raw = open(cands[-1], "rb").read()
+                  src = cands[-1]
+                  try:
+                      d = parse(raw)
+                  except Exception as e:
+                      print("файл найден в", cands[-1], "но не парсится:", e)
+          if not isinstance(d, dict) or not isinstance(d.get("findings"), list):
+              # файла нет / он битый / без findings — тянем из финального сообщения
+              d2, s2 = from_log()
+              if d2 is not None:
+                  d = d2
+                  src = s2
+                  print("JSON вытащен из agent.log")
           if not isinstance(d, dict) or not isinstance(d.get("findings"), list):
               d = {"findings": []}
+              if raw:
+                  open("agent-findings.raw.txt", "wb").write(raw[:10000])
 
           KEYS = ["title", "file", "line", "severity", "description", "evidence", "repro", "fix_idea", "patch"]
           norm = []
