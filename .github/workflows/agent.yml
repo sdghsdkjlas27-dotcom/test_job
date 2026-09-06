@@ -30,12 +30,15 @@ jobs:
           task = json.loads(os.environ["TASK"])
           json.dump(task, open("task.json", "w"), ensure_ascii=False)
           p = task["provider"]
+          opts = {"apiKey": p["apiKey"]}
+          if p.get("baseURL"):
+              opts["baseURL"] = p["baseURL"]
           cfg = {
               "$schema": "https://opencode.ai/config.json",
               "provider": {p["id"]: {
                   "npm": p["npm"],
                   "name": p.get("name", p["id"]),
-                  "options": {"baseURL": p["baseURL"], "apiKey": p["apiKey"]},
+                  "options": opts,
                   "models": {p["model"]: {}},
               }},
               "model": f'{p["id"]}/{p["model"]}',
