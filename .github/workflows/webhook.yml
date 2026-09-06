@@ -1,0 +1,25 @@
+name: webhook
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set webhook and check
+        env:
+          URL: ${{ secrets.WEBHOOK_SETUP_URL }}
+        run: |
+          echo "привязка webhook:"
+          curl -s "$URL"
+          echo
+          echo "getWebhookInfo:"
+          INFO_URL="https://api.telegram.org/bot${URL#*bot}"
+          INFO_URL="${INFO_URL%%setWebhook*}getWebhookInfo"
+          curl -s "$INFO_URL" | head -c 400
+          echo

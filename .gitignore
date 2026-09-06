@@ -1,0 +1,5 @@
+task.json
+task_snapshot.json
+agent.log
+agent-findings.json
+.env
