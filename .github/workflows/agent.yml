@@ -28,7 +28,7 @@ jobs:
           python3 - <<'PY'
           import json, os
           task = json.loads(os.environ["TASK"])
-          json.dump(task, open("task.json", "w"), indent=2, ensure_ascii=False)
+          json.dump(task, open("task.json", "w"), ensure_ascii=False)
           p = task["provider"]
           cfg = {
               "$schema": "https://opencode.ai/config.json",
@@ -41,22 +41,67 @@ jobs:
               "model": f'{p["id"]}/{p["model"]}',
           }
           json.dump(cfg, open("opencode.json", "w"), indent=2)
-          print("agent готов, модель:", cfg["model"])
+          if task.get("deliver"):
+              open(os.environ["GITHUB_ENV"], "a").write("HAS_DELIVER=true\n")
+              snap = {k: v for k, v in task.items() if k != "deliver"}
+              snap["deliver"] = {k: ("***" if k == "token" else v)
+                                 for k, v in task["deliver"].items()}
+              json.dump(snap, open("task_snapshot.json", "w"), indent=2, ensure_ascii=False)
+              print("prepare ok (режим приватной доставки, вывод скрыт)")
+          else:
+              print("agent готов, модель:", cfg["model"])
           PY
 
       - name: Run agent
         run: |
           MODEL=$(python3 -c "import json;t=json.load(open('task.json'));print(t['provider']['id']+'/'+t['provider']['model'])")
           TASK=$(python3 -c "import json;print(json.load(open('task.json'))['task'])")
-          opencode run --model "$MODEL" "$TASK" 2>&1 | tee agent.log || true
-          echo "=== хвост лога агента ==="
-          tail -15 agent.log
-          test -f agent-findings.json || echo '{"findings": []}' > agent-findings.json
-          python3 -c "import json; json.load(open('agent-findings.json'))" || echo '{"findings": []}' > agent-findings.json
-          echo "--- findings ---"
-          cat agent-findings.json
+          if [ "$HAS_DELIVER" = "true" ]; then
+            opencode run --model "$MODEL" "$TASK" > agent.log 2>&1 || true
+            test -f agent-findings.json || echo '{"findings": []}' > agent-findings.json
+            python3 -c "import json; json.load(open('agent-findings.json'))" || echo '{"findings": []}' > agent-findings.json
+            echo "агент отработал; вывод скрыт, результаты уходят в приватное хранилище"
+          else
+            opencode run --model "$MODEL" "$TASK" 2>&1 | tee agent.log || true
+            echo "=== хвост лога агента ==="
+            tail -15 agent.log
+            test -f agent-findings.json || echo '{"findings": []}' > agent-findings.json
+            python3 -c "import json; json.load(open('agent-findings.json'))" || echo '{"findings": []}' > agent-findings.json
+            echo "--- findings ---"
+            cat agent-findings.json
+          fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Deliver
+        if: env.HAS_DELIVER == 'true'
+        env:
+          TASK: ${{ secrets.TASK_JSON }}
+        run: |
+          python3 - <<'PY'
+          import json, os, shutil, subprocess, tempfile, datetime
+          task = json.loads(os.environ["TASK"])
+          d = task["deliver"]
+          url = f"https://agent:{d['token']}@github.com/{d['repo']}.git"
+          wdir = tempfile.mkdtemp()
+          subprocess.run(["git", "clone", "--depth", "1", url, wdir],
+                         check=True, capture_output=True)
+          stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+          out = os.path.join(wdir, stamp)
+          os.makedirs(out, exist_ok=True)
+          for f in ["agent-findings.json", "agent.log", "task_snapshot.json"] + list(d.get("include", [])):
+              if os.path.isfile(f):
+                  shutil.copy(f, os.path.join(out, os.path.basename(f)))
+          def git(*a):
+              subprocess.run(["git", "-C", wdir, *a], check=True, capture_output=True)
+          git("add", "-A")
+          git("-c", "user.name=agent", "-c", "user.email=agent@workers.local",
+              "commit", "-m", f"results {stamp}")
+          subprocess.run(["git", "-C", wdir, "push"], check=True, capture_output=True)
+          print("доставлено в приватное хранилище:", stamp)
+          PY
+
+      - name: Upload public artifact
+        if: env.HAS_DELIVER != 'true'
+        uses: actions/upload-artifact@v4
         with:
           name: agent-findings
           path: |
