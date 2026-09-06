@@ -1,0 +1,65 @@
+name: agent
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    environment: gate
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install agent CLI
+        run: npm install -g opencode-ai@latest
+
+      - name: Prepare
+        env:
+          TASK: ${{ secrets.TASK_JSON }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          task = json.loads(os.environ["TASK"])
+          json.dump(task, open("task.json", "w"), indent=2, ensure_ascii=False)
+          p = task["provider"]
+          cfg = {
+              "$schema": "https://opencode.ai/config.json",
+              "provider": {p["id"]: {
+                  "npm": p["npm"],
+                  "name": p.get("name", p["id"]),
+                  "options": {"baseURL": p["baseURL"], "apiKey": p["apiKey"]},
+                  "models": {p["model"]: {}},
+              }},
+              "model": f'{p["id"]}/{p["model"]}',
+          }
+          json.dump(cfg, open("opencode.json", "w"), indent=2)
+          print("agent готов, модель:", cfg["model"])
+          PY
+
+      - name: Run agent
+        run: |
+          MODEL=$(python3 -c "import json;t=json.load(open('task.json'));print(t['provider']['id']+'/'+t['provider']['model'])")
+          TASK=$(python3 -c "import json;print(json.load(open('task.json'))['task'])")
+          opencode run --model "$MODEL" "$TASK" 2>&1 | tee agent.log || true
+          echo "=== хвост лога агента ==="
+          tail -15 agent.log
+          test -f agent-findings.json || echo '{"findings": []}' > agent-findings.json
+          python3 -c "import json; json.load(open('agent-findings.json'))" || echo '{"findings": []}' > agent-findings.json
+          echo "--- findings ---"
+          cat agent-findings.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-findings
+          path: |
+            agent-findings.json
+            agent.log
+          if-no-files-found: error
