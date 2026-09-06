@@ -41,6 +41,8 @@ jobs:
               "model": f'{p["id"]}/{p["model"]}',
           }
           json.dump(cfg, open("opencode.json", "w"), indent=2)
+          if task.get("target"):
+              open(os.environ["GITHUB_ENV"], "a").write("HAS_TARGET=true\n")
           if task.get("deliver"):
               open(os.environ["GITHUB_ENV"], "a").write("HAS_DELIVER=true\n")
               snap = {k: v for k, v in task.items() if k != "deliver"}
@@ -52,10 +54,28 @@ jobs:
               print("agent готов, модель:", cfg["model"])
           PY
 
+      - name: Clone target
+        if: env.HAS_TARGET == 'true'
+        env:
+          TASK: ${{ secrets.TASK_JSON }}
+        run: |
+          T=$(python3 -c "import json,os;print(json.loads(os.environ['TASK'])['target'])")
+          git clone --depth 50 "https://github.com/$T.git" proj 2>&1 | tail -2
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/proj" >> "$GITHUB_ENV"
+          echo "target: $T, файлов: $(find proj -type f -not -path '*/.git/*' | wc -l)"
+
       - name: Run agent
         run: |
           MODEL=$(python3 -c "import json;t=json.load(open('task.json'));print(t['provider']['id']+'/'+t['provider']['model'])")
-          TASK=$(python3 -c "import json;print(json.load(open('task.json'))['task'])")
+          TASK=$(python3 - <<'PY'
+          import json, os
+          t = json.load(open("task.json"))["task"]
+          if os.environ.get("PROJECT_DIR"):
+              t += f"\n\nПроект для анализа УЖЕ склонирован в {os.environ['PROJECT_DIR']} — работай только внутри него, файлы воркспейса вне proj не трогай."
+          t += f"\n\nРезультат пиши строго по абсолютному пути {os.environ['GITHUB_WORKSPACE']}/agent-findings.json. После записи перечитай файл и убедись, что найденные баги реально в нём."
+          print(t)
+          PY
+          )
           if [ "$HAS_DELIVER" = "true" ]; then
             opencode run --model "$MODEL" "$TASK" > agent.log 2>&1 || true
             test -f agent-findings.json || echo '{"findings": []}' > agent-findings.json
@@ -70,6 +90,16 @@ jobs:
             echo "--- findings ---"
             cat agent-findings.json
           fi
+          python3 - <<'PY'
+          import json
+          try:
+              fs = json.load(open("agent-findings.json")).get("findings", [])
+              print(f"ВАЛИДАЦИЯ: findings = {len(fs)} шт.")
+              for f in fs:
+                  print("  -", f.get("severity"), "|", f.get("title"), "|", f.get("file"))
+          except Exception as e:
+              print("ВАЛИДАЦИЯ: не удалось прочитать findings:", e)
+          PY
 
       - name: Deliver
         if: env.HAS_DELIVER == 'true'
