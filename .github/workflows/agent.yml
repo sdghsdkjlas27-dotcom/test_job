@@ -133,7 +133,7 @@ jobs:
           if not isinstance(d, dict) or not isinstance(d.get("findings"), list):
               d = {"findings": []}
 
-          KEYS = ["title", "file", "line", "severity", "description", "evidence", "repro", "fix_idea"]
+          KEYS = ["title", "file", "line", "severity", "description", "evidence", "repro", "fix_idea", "patch"]
           norm = []
           for f in d["findings"]:
               if not isinstance(f, dict):
@@ -143,6 +143,8 @@ jobs:
                   g["repro"] = g.pop("reproduction")
               if "fix" in g and "fix_idea" not in g:
                   g["fix_idea"] = g.pop("fix")
+              if "diff" in g and "patch" not in g:
+                  g["patch"] = g.pop("diff")
               if "why" in g:
                   g["description"] = (g.get("description", "") + " " + g.pop("why")).strip()
               if not g.get("title"):
@@ -155,6 +157,27 @@ jobs:
               norm.append({k: g.get(k) for k in KEYS})
           d = {"findings": norm}
           json.dump(d, open("agent-findings.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+
+          # человекочитаемый черновик баг-репорта
+          md = ["# Bug report draft", ""]
+          for i, f in enumerate(norm, 1):
+              md.append(f"## #{i} [{f['severity']}] {f['title']}")
+              md.append("")
+              md.append(f"- File: `{f['file']}:{f.get('line') or '?'}`")
+              md.append("")
+              if f.get("description"):
+                  md += ["**What is wrong**", "", f["description"], ""]
+              if f.get("evidence"):
+                  md += ["**Evidence**", "", "```", f["evidence"], "```", ""]
+              if f.get("repro"):
+                  md += ["**Reproduction**", "", f["repro"], ""]
+              if f.get("fix_idea"):
+                  md += ["**Proposed fix**", "", f["fix_idea"], ""]
+              if f.get("patch"):
+                  md += ["**Merge proposal (patch)**", "", "```diff", f["patch"], "```", ""]
+              md.append("---")
+              md.append("")
+          open("report.md", "w", encoding="utf-8").write("\n".join(md))
           print(f"ИСТОЧНИК: {src}")
           print(f"ВАЛИДАЦИЯ: findings = {len(norm)} шт.")
           for f in norm:
@@ -177,7 +200,7 @@ jobs:
           stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H%M%S")
           out = os.path.join(wdir, stamp)
           os.makedirs(out, exist_ok=True)
-          for f in ["agent-findings.json", "agent-findings.raw.txt", "agent.log", "task_snapshot.json"] + list(d.get("include", [])):
+          for f in ["agent-findings.json", "agent-findings.raw.txt", "report.md", "agent.log", "task_snapshot.json"] + list(d.get("include", [])):
               if os.path.isfile(f):
                   shutil.copy(f, os.path.join(out, os.path.basename(f)))
           def git(*a):
