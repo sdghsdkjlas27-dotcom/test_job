@@ -78,14 +78,30 @@ jobs:
           t += f"\n\nРезультат пиши строго по абсолютному пути {os.environ['GITHUB_WORKSPACE']}/agent-findings.json."
           t += "\nФормат файла: валидный JSON-ОБЪЕКТ {\"findings\": [...]} — НЕ голый массив, БЕЗ markdown-заборов ``` и пояснений в файле."
           t += "\nПосле записи перечитай файл и убедись, что найденные баги реально в нём."
+          t += "\nЭКОНОМЬ ЗАПРОСЫ: у модели жёсткий лимит запросов в минуту - читай файлы крупными кусками (limit=400 строк), не перечитывай одно и то же, не делай пустых обращений."
           print(t)
           PY
           )
           if [ "$HAS_DELIVER" = "true" ]; then
             opencode run --model "$MODEL" "$TASK" > agent.log 2>&1 || true
-            echo "агент отработал; вывод скрыт, результаты уходят в приватное хранилище"
           else
             opencode run --model "$MODEL" "$TASK" 2>&1 | tee agent.log || true
+          fi
+          # исчерпана минутная квота - ждём и продолжаем ту же сессию
+          for i in 1 2 3; do
+            if ! grep -qiE "exceeded your current quota|RESOURCE_EXHAUSTED|rate.?limit|429" agent.log; then break; fi
+            echo "лимит запросов - пауза 70с и продолжение сессии (попытка $i)"
+            sleep 70
+            CONT="Продолжай анализ с места остановки. Если анализ уже завершён - запиши agent-findings.json по указанному абсолютному пути и перечитай его."
+            if [ "$HAS_DELIVER" = "true" ]; then
+              opencode run --model "$MODEL" --continue "$CONT" >> agent.log 2>&1 || true
+            else
+              opencode run --model "$MODEL" --continue "$CONT" 2>&1 | tee -a agent.log || true
+            fi
+          done
+          if [ "$HAS_DELIVER" = "true" ]; then
+            echo "агент отработал; вывод скрыт, результаты уходят в приватное хранилище"
+          else
             echo "=== хвост лога агента ==="
             tail -15 agent.log
           fi
