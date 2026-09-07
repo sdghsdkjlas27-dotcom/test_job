@@ -43,6 +43,8 @@ jobs:
               }},
               "model": f'{p["id"]}/{p["model"]}',
           }
+          if task.get("plugins"):
+              cfg["plugin"] = task["plugins"]
           json.dump(cfg, open("opencode.json", "w"), indent=2)
           if task.get("target"):
               open(os.environ["GITHUB_ENV"], "a").write("HAS_TARGET=true\n")
